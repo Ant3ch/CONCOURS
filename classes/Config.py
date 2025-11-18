@@ -86,6 +86,7 @@ class Config:
         if dev_mode_override is not None:
             env_dev = bool(dev_mode_override)
         self.DEV_MODE = dev_mode_uc if dev_mode_uc is not None else env_dev
+        self.DELAY_SCALE_DEV= 1
         return self
 
     # Remove broken creator; keep a no-op for compatibility if called elsewhere
@@ -162,5 +163,6 @@ class Config:
             "KEYWORDS": self.KEYWORDS,
             "HASHTAGS": self.HASHTAGS,
             "MENTIONS": self.MENTIONS,
-            "RESPONSES": self.RESPONSES
+            "RESPONSES": self.RESPONSES,
+            "DELAY_SCALE_DEV": self.DELAY_SCALE_DEV 
         }

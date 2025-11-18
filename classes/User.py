@@ -22,6 +22,28 @@ class User:
         self.password = self.cfg["PASSWORD"]
         print(f"👤 User '{self.username}' initialized")
         # (DB is attached later by InstanceManager)
+        # Centralized delay profile and rate limits (override via cfg["DELAYS"] / cfg["MIN_GAP"])
+        self.delays = {
+            "login_nav": (3.0, 6.0),
+            "page_settle": (6.0, 12.0),
+            "scroll_gap": (0.8, 1.3),
+            "before_action": (0.7, 1.2),
+            "after_action": (0.9, 1.4),
+            "between_posts": (18.0, 35.0),
+            "type_char": (0.03, 0.08),
+            "retry_wait": (2.0, 3.5),
+            **self.cfg.get("DELAYS", {})
+        }
+        self.min_gap = {
+            "like": 25,
+            "comment": 50,
+            "follow": 55,
+            **self.cfg.get("MIN_GAP", {})
+        }
+        self.last_action = {"like": 0.0, "comment": 0.0, "follow": 0.0}
+        self._dev_scale = self.cfg.get("DELAY_SCALE_DEV", 0.35) if self.cfg.get("DEV_MODE") else 1.0
+        if self._dev_scale != 1.0:
+            self.min_gap = {k: max(1, int(v * self._dev_scale)) for k, v in self.min_gap.items()}
 
     def attach_db(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -45,6 +67,40 @@ class User:
         if not self.cfg["DEV_MODE"]:
             options.add_argument("--headless=new")
         self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    # -------------- Delay/Rate helpers --------------
+    def _rand_between(self, key: str, default=(0.5, 1.0)) -> float:
+        a, b = self.delays.get(key, default)
+        t = random.uniform(a, b) * self._dev_scale
+        return max(0.0, t)
+
+    async def nap(self, key: str, default=(0.5, 1.0)) -> float:
+        t = self._rand_between(key, default)
+        await asyncio.sleep(t)
+        return t
+
+    async def gate(self, kind: str):
+        """Ensure a minimum gap between same-kind actions to avoid bursts."""
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        last = self.last_action.get(kind, 0.0)
+        min_gap = self.min_gap.get(kind, 30)
+        # small randomization to avoid patterns
+        jitter = random.uniform(0, min(5, 0.15 * min_gap)) * self._dev_scale
+        wait = (last + min_gap + jitter) - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+    def _mark(self, kind: str):
+        self.last_action[kind] = asyncio.get_running_loop().time()
+
+    async def type_text(self, el, text: str):
+        """Human-like typing to reduce bot detection."""
+        for ch in text:
+            el.send_keys(ch)
+            await asyncio.sleep(self._rand_between("type_char", (0.02, 0.08)))
+
+    # -------------- end helpers ---------------------
 
     async def _load_seen(self):
         return  # deprecated
@@ -78,21 +134,21 @@ class User:
 
     async def login(self):
         self.driver.get("https://www.instagram.com/accounts/login/")
-        await asyncio.sleep(3)
+        await self.nap("login_nav")
         try:
             u =  self.driver.find_element(By.NAME, "username")
             p = self.driver.find_element(By.NAME, "password")
             u.send_keys(self.username)
             p.send_keys(self.password)
             p.send_keys(Keys.ENTER)
-            await asyncio.sleep(10)
+            await self.nap("page_settle")
             if "challenge" in self.driver.current_url.lower():
                 code = input("2FA code: ")
                 try:
                     ci = self.driver.find_element(By.NAME, "security_code")
                     ci.send_keys(code)
                     ci.send_keys(Keys.ENTER)
-                    await asyncio.sleep(20)
+                    await self.nap("page_settle")
                 except:
                     input("Validate manually then press Enter: ")
             await self.log("[login] ok")
@@ -172,12 +228,16 @@ class User:
                 return False
             aria = (svg.get_attribute("aria-label") or "").strip().lower()
             if aria in ("j’aime", "like"):
+                await self.gate("like")
+                await self.nap("before_action")
                 self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
                 await asyncio.sleep(0.05)
                 try:
                     btn.click()
                 except ElementClickInterceptedException:
                     self.driver.execute_script("arguments[0].click();", btn)
+                await self.nap("after_action")
+                self._mark("like")
                 await self.log("[like] done")
                 return True
             await self.log("[like] already")
@@ -195,7 +255,11 @@ class User:
             for c in candidates:
                 t = c.text.strip().lower()
                 if t == "suivre":
+                    await self.gate("follow")
+                    await self.nap("before_action")
                     c.click()
+                    await self.nap("after_action")
+                    self._mark("follow")
                     await self.log("[follow] ok")
                     return True
                 if t in ("suivi(e)", "abonné(e)"):
@@ -219,7 +283,8 @@ class User:
         )
         for attempt in range(retries):
             try:
-                await asyncio.sleep(0.5)
+                await self.gate("comment")
+                await self.nap("before_action")
                 comment_box = await self.wait_for_clickable(selector_box, timeout=6)
                 if not comment_box:
                     raise Exception("comment box timeout")
@@ -232,8 +297,8 @@ class User:
                     comment_box.clear()
                 except:
                     pass
-                comment_box.send_keys(text + " ")
-                await asyncio.sleep(0.3)
+                await self.type_text(comment_box, text + " ")
+                await asyncio.sleep(0.2)
                 possible_send_buttons = self.driver.find_elements(By.CSS_SELECTOR,
                     "div.x1i10hfl.xjqpnuy.xc5r6h4.xqeqjp1.x1phubyo.xdl72j9."
                     "x2lah0s.x3ct3a4.xdj266r.x14z9mp.xat24cr.x1lziwak.x2lwn1j."
@@ -251,11 +316,14 @@ class User:
                     send_btn.click()
                 except ElementClickInterceptedException:
                     self.driver.execute_script("arguments[0].click();", send_btn)
+                await self.nap("after_action")
+                self._mark("comment")
                 await self.log("[comment] posted:", text)
-                await asyncio.sleep(0.5)
                 return True
             except Exception as e:
                 await self.log(f"[comment] attempt {attempt+1} failed:", e)
+                # small randomized backoff before retry
+                await asyncio.sleep(self._rand_between("retry_wait") + attempt * 0.5)
         await self.log("[comment] failed")
         return False
 
@@ -278,7 +346,7 @@ class User:
             return
         for _ in range(10):
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            await asyncio.sleep(0.8)  # shorter delay -> more interleaving
+            await self.nap("scroll_gap")
             posts = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/p/'], a[href*='/reel/'], a[href*='/tv/']")
             candidates = []
             for el in posts:
@@ -301,7 +369,7 @@ class User:
                     self.driver.switch_to.window(new_handles[0])
                 else:
                     self.driver.get(link)
-                await asyncio.sleep(1)
+                await self.nap("page_settle")
                 if self.cfg["AUTO_LIKE"]: await self.like_current()
                 if self.cfg["AUTO_FOLLOW"]: await self.follow_current()
                 if self.cfg["AUTO_COMMENT"]: await self.comment_current()
@@ -309,7 +377,7 @@ class User:
                 if len(self.driver.window_handles) > 1:
                     self.driver.close()
                     self.driver.switch_to.window(self.driver.window_handles[0])
-                await asyncio.sleep(0)  # yield to other users
+                await self.nap("between_posts")  # slow down between posts
 
     async def run(self):
         for tag in self.cfg["HASHTAGS"]:
