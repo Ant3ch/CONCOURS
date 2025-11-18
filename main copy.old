@@ -1,0 +1,367 @@
+import json
+import time
+import random
+import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+from dotenv import load_dotenv, get_key
+load_dotenv(".env")
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+USERNAME = get_key(key_to_get="USERNAME",dotenv_path=".env")
+PASSWORD = get_key(key_to_get="PASSWORD",dotenv_path=".env")
+WEBHOOK_URL = get_key(key_to_get="WEBHOOK_URL",dotenv_path=".env")
+HASHTAGS = get_key(key_to_get="HASHTAGS",dotenv_path=".env")
+KEYWORDS = get_key(key_to_get="KEYWORDS",dotenv_path=".env")
+SEEN_FILE = get_key(key_to_get="SEEN_FILE",dotenv_path=".env")
+MENTIONS = eval(get_key(key_to_get="MENTIONS", dotenv_path=".env"))
+RESPONSES = eval(get_key(key_to_get="RESPONSES", dotenv_path=".env"))
+
+HASHTAGS = eval(HASHTAGS)
+KEYWORDS = eval(KEYWORDS)
+KEYWORDS.extend([kw.capitalize() for kw in KEYWORDS])
+
+# ensure all mentions start with @
+MENTIONS = [m if m.startswith("@") else "@" + m for m in MENTIONS]
+
+AUTO_LIKE = True
+AUTO_COMMENT = True
+AUTO_FOLLOW = True
+
+DEV_MODE = False  # If True, won't spam console or send everyting on discord 
+
+
+
+
+# -----------------------------
+# HELPERS
+# -----------------------------
+def load_seen():
+    try:
+        return set(json.load(open(SEEN_FILE, "r")))
+    except:
+        return set()
+
+def save_seen(s):
+    json.dump(list(s), open(SEEN_FILE, "w"))
+
+def send_discord(url, caption):
+    payload = {"content": f"🎯 Concours détecté : {url}\n\n{caption[:200]}..."}
+    try:
+        r = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        if r.status_code in (200, 204):
+            print("[+] Envoyé sur Discord :", url)
+        else:
+            print(f"❌ Discord HTTP {r.status_code}: {r.text[:120]}")
+    except Exception as e:
+        print("❌ Erreur Discord:", e)
+
+# -----------------------------
+# SELENIUM
+# -----------------------------
+options = webdriver.ChromeOptions()
+options.add_argument("--start-maximized")
+options.add_argument('--headless=new')
+options.add_argument("--disable-blink-features=AutomationControlled")
+
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+print("[+] Ouverture Instagram…")
+driver.get("https://www.instagram.com/accounts/login/")
+time.sleep(2.5)
+
+# -----------------------------
+# LOGIN INSTAGRAM
+# -----------------------------
+print("[+] Connexion avec USERNAME / PASSWORD…")
+try:
+    user_input = driver.find_element(By.NAME, "username")
+    pass_input = driver.find_element(By.NAME, "password")
+
+    user_input.send_keys(USERNAME)
+    pass_input.send_keys(PASSWORD)
+    pass_input.send_keys(Keys.ENTER)
+
+    time.sleep(6)
+
+    if "challenge" in driver.current_url.lower():
+        print("⚠️ Code de validation demandé par Instagram !")
+        code = input("📩 Tape le code reçu : ")
+        try:
+            code_input = driver.find_element(By.NAME, "security_code")
+            code_input.send_keys(code)
+            code_input.send_keys(Keys.ENTER)
+            time.sleep(6)
+        except:
+            print("❌ Fais-le manuellement dans la fenêtre Chrome puis appuie sur Entrée.")
+            input("➡️ Appuie sur Entrée quand validé : ")
+
+    print("[+] Connexion réussie.")
+except Exception as e:
+    print("❌ Erreur lors de la connexion :", e)
+    driver.quit()
+    exit()
+
+seen = load_seen()
+# -----------------------------
+# LIKE / COMMENT HELPERS
+# -----------------------------
+def try_like(driver):
+    try:
+        # locate the like button container
+        btn = WebDriverWait(driver, 8).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 
+                ".x1i10hfl.x972fbf.x10w94by.x1qhh985.x14e42zd.x9f619.x3ct3a4."
+                "xdj266r.x14z9mp.xat24cr.x1lziwak.x16tdsg8.x1hl2dhg.xggy1nq."
+                "x1a2a7pz.x6s0dn4.xjbqb8w.x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl."
+                "x1ypdohk.x78zum5.xl56j7k.x1y1aw1k.xf159sx.xwib8y2.xmzvs34."
+                "xcdnw81.x1epzrsm.x1jplu5e.x14snt5h"))
+        )
+        svg = btn.find_element(By.TAG_NAME, "svg")
+        aria_label = svg.get_attribute("aria-label")
+        if aria_label == "J’aime":
+            btn.click()
+            print("❤️ Liked")
+            return True
+        else:
+            print("💛 Already liked, skipping")
+            return False
+    except:
+        print("❌ Like button not found")
+        return False
+
+
+
+# COMMENT FUNCTION
+# -----------------------------
+def try_comment(driver, text, retries=3):
+    for attempt in range(retries):
+        try:
+            time.sleep(1)
+            comment_box = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR,
+                    "textarea.x1i0vuye.xgcd1z6.x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl."
+                    "x5n08af.x78zum5.x1iyjqo2.x1qlqyl8.x1d6elog.xlk1fp6.x1a2a7pz."
+                    "xexx8yu.xyri2b.x18d9i69.x1c1uobl.xtt52l0.xnalus7.xs3hnx8."
+                    "x1bq4at4.xaqnwrm"))
+            )
+
+            driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", comment_box)
+            comment_box.clear()
+            comment_box.send_keys(text + " ")
+            time.sleep(0.5)
+
+            # Find all matching divs and filter by innerText
+            possible_send_buttons = driver.find_elements(By.CSS_SELECTOR,
+                "div.x1i10hfl.xjqpnuy.xc5r6h4.xqeqjp1.x1phubyo.xdl72j9."
+                "x2lah0s.x3ct3a4.xdj266r.x14z9mp.xat24cr.x1lziwak.x2lwn1j."
+                "xeuugli.x1hl2dhg.xggy1nq.x1ja2u2z.x1t137rt.x1q0g3np.x1a2a7pz."
+                "x6s0dn4.xjyslct.x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl."
+                "x9f619.x1ypdohk.x1f6kntn.xl56j7k.x17ydfre.x2b8uid.xlyipyv."
+                "x87ps6o.x14atkfc.x5c86q.x18br7mf.x1i0vuye.x11q7cde.xr5sc7."
+                "xf8g3cd.x20cjte.xt0b8zv.xjbqb8w.xr9e8f9.x1e4oeot.x1ui04y5."
+                "x6en5u8.x972fbf.x10w94by.x1qhh985.x14e42zd.xt0psk2.xt7dq6l."
+                "xexx8yu.xyri2b.x18d9i69.x1c1uobl.x1n2onr6.x1n5bzlp")
+            
+            send_btn = None
+            for btn in possible_send_buttons:
+                if btn.text.strip().lower() == "publier":
+                    send_btn = btn
+                    break
+
+            if send_btn:
+                send_btn.click()
+                print("💬 Comment posted")
+                time.sleep(1)
+                return True
+            else:
+                raise Exception("Send button with text 'Publier' not found")
+
+        except Exception as e:
+            print(f"⚠️ Attempt {attempt+1} failed")
+            time.sleep(1)
+
+    print("❌ Could not post comment after retries")
+    return False
+
+
+# -----------------------------
+# FOLLOW FUNCTION
+# -----------------------------
+def try_follow(driver):
+    try:
+        possible_follow_buttons = driver.find_elements(By.CSS_SELECTOR,
+            "div.x1i10hfl.xjqpnuy.xc5r6h4.xqeqjp1.x1phubyo.xdl72j9."
+            "x2lah0s.x3ct3a4.xdj266r.x14z9mp.xat24cr.x1lziwak.x2lwn1j."
+            "xeuugli.x1hl2dhg.xggy1nq.x1ja2u2z.x1t137rt.x1q0g3np.x1a2a7pz."
+            "x6s0dn4.xjyslct.x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl."
+            "x9f619.x1ypdohk.x1f6kntn.xl56j7k.x17ydfre.x2b8uid.xlyipyv."
+            "x87ps6o.x14atkfc.x5c86q.x18br7mf.x1i0vuye.xl0gqc1.xr5sc7."
+            "xlal1re.x14jxsvd.xt0b8zv.xjbqb8w.xr9e8f9.x1e4oeot.x1ui04y5."
+            "x6en5u8.x972fbf.x10w94by.x1qhh985.x14e42zd.xt0psk2.xt7dq6l."
+            "xexx8yu.xyri2b.x18d9i69.x1c1uobl.x1n2onr6.x1n5bzlp")
+
+        follow_btn = None
+        for btn in possible_follow_buttons:
+            text = btn.text.strip().lower()
+            if text == "suivre":
+                follow_btn = btn
+                break
+            elif text == "suivi(e)":
+                print("💛 Already following, skipping")
+                return False
+
+        if follow_btn:
+            follow_btn.click()
+            print("➕ Followed")
+            return True
+        else:
+            print("❌ Follow button not found")
+            return False
+
+    except Exception as e:
+        print("❌ Follow error:", e)
+        return False
+    try:
+        possible_follow_buttons = driver.find_elements(By.CSS_SELECTOR,
+            "div.x1i10hfl.xjqpnuy.xc5r6h4.xqeqjp1.x1phubyo.xdl72j9."
+            "x2lah0s.x3ct3a4.xdj266r.x14z9mp.xat24cr.x1lziwak.x2lwn1j."
+            "xeuugli.x1hl2dhg.xggy1nq.x1ja2u2z.x1t137rt.x1q0g3np.x1a2a7pz."
+            "x6s0dn4.xjyslct.x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl."
+            "x9f619.x1ypdohk.x1f6kntn.xl56j7k.x17ydfre.x2b8uid.xlyipyv."
+            "x87ps6o.x14atkfc.x5c86q.x18br7mf.x1i0vuye.xl0gqc1.xr5sc7."
+            "xlal1re.x14jxsvd.xt0b8zv.xjbqb8w.xr9e8f9.x1e4oeot.x1ui04y5."
+            "x6en5u8.x972fbf.x10w94by.x1qhh985.x14e42zd.xt0psk2.xt7dq6l."
+            "xexx8yu.xyri2b.x18d9i69.x1c1uobl.x1n2onr6.x1n5bzlp")
+
+        follow_btn = None
+        for btn in possible_follow_buttons:
+            if btn.text.strip().lower() == "suivre":
+                follow_btn = btn
+                break
+
+        if follow_btn:
+            follow_btn.click()
+            print("➕ Followed")
+            return True
+        else:
+            print("❌ Already following or button not found")
+            return False
+
+    except Exception as e:
+        print("❌ Follow error:", e)
+        return False
+
+# -----------------------------
+# SCAN HASHTAGS
+# -----------------------------
+def scan_hashtag(tag):
+    print(f"\n🔎 Scan du hashtag #{tag}")
+
+    url = f"https://www.instagram.com/explore/tags/{tag}/"
+    driver.get(url)
+    wait = WebDriverWait(driver, 15)
+    try:
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/'], a[href*='/reel/'], a[href*='/tv/']")))
+    except TimeoutException:
+        print("⚠️ Aucun post trouvé pour ce hashtag (timeout).")
+        return
+
+    for i in range(15):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+
+        posts = driver.find_elements(By.CSS_SELECTOR, "a[href*='/p/'], a[href*='/reel/'], a[href*='/tv/']")
+        print(f"[dbg] Scroll {i+1}/15: collected {len(posts)} anchors")
+
+        candidates = []
+        for el in posts:
+            link = el.get_attribute("href")
+            if not link:
+                continue
+            parts = [p for p in link.split("/") if p]
+            if len(parts) < 2:
+                continue
+            shortcode = parts[-1] if parts[-2] in ("p", "reel", "tv") else parts[-2]
+            if shortcode in seen or any(sc == shortcode for sc, _ in candidates):
+                continue
+            candidates.append((shortcode, link))
+
+        print(f"[dbg] New candidates this batch: {len(candidates)}")
+
+        for shortcode, link in candidates:
+            prev_handles = set(driver.window_handles)
+            driver.execute_script("window.open(arguments[0], '_blank');", link)
+            try:
+                wait.until(lambda d: len(set(d.window_handles) - prev_handles) > 0)
+                new_handle = list(set(driver.window_handles) - prev_handles)[0]
+                driver.switch_to.window(new_handle)
+            except TimeoutException:
+                print("[dbg] New tab blocked, opening same tab")
+                driver.get(link)
+            time.sleep(2)
+
+            try:
+                caption = ""
+                try:
+                    elems = driver.find_elements(By.CSS_SELECTOR, "h1, span[dir='auto'], article h1, div[role='dialog'] h1")
+                    text = " ".join(e.text for e in elems if e.text).strip()
+                    if not text:
+                        text = driver.find_element(By.TAG_NAME, "body").text
+                    caption = text.lower()
+                except:
+                    caption = ""
+
+                # if any(k in caption for k in KEYWORDS):
+                #     print("🎉 Concours trouvé :", link)
+                #     send_discord(link, caption + "\n\n||Mot-clé détecté.||")
+                    print("🎉 Concours trouvé :", link)
+                    send_discord(link, caption + "\n\n||Mot-clé détecté.||")
+                    if AUTO_LIKE:
+                        try_like(driver)
+
+                    if AUTO_FOLLOW:
+                        try_follow(driver)
+                        
+                    if AUTO_COMMENT:
+                        comment_text = f"{random.choice(RESPONSES)} " + " ".join(MENTIONS)+" "
+                        try_comment(driver, comment_text)
+                  
+
+                # else:
+                #     print(f"[dbg] Skip (no keywords): {link}")
+                #     send_discord(link, caption + "\n\n||Aucun mot-clé détecté.||")
+
+                seen.add(shortcode)
+
+            except Exception as e:
+                print("Erreur post :", e)
+
+            if len(driver.window_handles) > 1:
+                driver.close()
+                driver.switch_to.window(driver.window_handles[0])
+
+# -----------------------------
+# MAIN LOOP
+# -----------------------------
+try:
+    while True:
+        for tag in HASHTAGS:
+            scan_hashtag(tag)
+
+        save_seen(seen)
+        print("\n⏳ Pause 5 minutes…")
+        time.sleep(300)
+
+except KeyboardInterrupt:
+    print("Arrêt manuel.")
+    save_seen(seen)
+    driver.quit()

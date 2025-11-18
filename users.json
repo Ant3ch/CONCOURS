@@ -1,0 +1,18 @@
+{
+    "1": {
+        "USERNAME": "elea_ril.morienval",
+        "PASSWORD": "Y:f5sBpS7f8bWCe",
+        "WEBHOOK_URL": "https://discord.com/api/webhooks/1325757795852877844/zkYZ4ROTUVuRrBg4yCUobnJYULsTyv6-MZX5lCfXbIihwSqrFrjtyqAFKinNojOTXgdd",
+        "HASHTAGS":["concours", "jeuconcours","CONCOURS"],
+        "KEYWORDS" :["concours", "giveaway", "gagner", "à gagner", "tirage","tentez de gagner","noël","cadeau","jeu concours","jeux concours","lots à gagner","participez au concours", "tagguer un ami", "pour participer","lot","lots"],
+        "SEEN_DIR" : "./seenFiles/",
+        "MENTIONS" : ["@letapisdallsuite", "@afton_fredbear"],
+        "RESPONSES": ["Merci ça a l'air génial !!!", "Je participe :) ", "Super , un concours , avec plaisir !", "Merci pour le concours !", "Je tente ma chance !", "Merci pour ce concours !", "Coucou, je participe avec plaisir !", "Merci pour le jeu concours !", "Je participe avec plaisir !", "Merci pour ce super concours !", "Merci pour ce concours, je tente ma chance !"],
+        "AUTO_FOLLOW": true,
+        "AUTO_LIKE": true,
+        "AUTO_COMMENT": true,
+        "DEV_MODE": true
+        
+    }
+
+}
